@@ -1,4 +1,4 @@
-// Copyright (c) Meta Platforms, Inc. and affiliates.
+﻿// Copyright (c) Meta Platforms, Inc. and affiliates.
 
 using System.Collections;
 using System.Collections.Generic;
@@ -16,8 +16,11 @@ namespace PassthroughCameraSamples.MultiObjectDetection
 
         [Header("Placement configuration")]
         [SerializeField] private DetectionSpawnMarkerAnim m_spawnMarker;
-
         [SerializeField] private SentisInferenceUiManager m_uiInference;
+
+        // Wire this in the Inspector to the same Box3DManager used by SentisInferenceRunManager
+        [SerializeField] private Box3DManager m_box3DManager;
+
         [Space(10)]
         public UnityEvent<int> OnObjectsIdentified;
 
@@ -47,26 +50,19 @@ namespace PassthroughCameraSamples.MultiObjectDetection
         {
             if (!m_isStarted)
             {
-                // Manage the Initial Ui Menu
                 if (m_cameraAccess.IsPlaying)
-                {
                     m_isStarted = true;
-                }
             }
             else
             {
-                // Press A button to spawn 3d markers
+                // Button A — spawn markers AND lock the matching 3D boxes
                 if (InputManager.IsButtonADownOrPinchStarted())
-                {
                     SpawnCurrentDetectedObjects();
-                }
             }
 
-            // Press B button to clean all markers
+            // Button B — clear markers AND unlock all 3D boxes
             if (InputManager.IsButtonBDownOrMiddleFingerPinchStarted())
-            {
                 CleanMarkers();
-            }
         }
 
         private IEnumerator UpdateSpatialAnchor()
@@ -77,43 +73,26 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                 if (m_spatialAnchor == null)
                 {
                     yield return CreateSpatialAnchorAndSave();
-                    if (m_spatialAnchor == null)
-                    {
-                        continue;
-                    }
+                    if (m_spatialAnchor == null) continue;
                 }
-
                 if (!m_spatialAnchor.IsTracked)
-                {
                     yield return RestoreSpatialAnchorTracking();
-                }
             }
 
             IEnumerator CreateSpatialAnchorAndSave()
             {
                 m_spatialAnchor = m_uiInference.ContentParent.gameObject.AddComponent<OVRSpatialAnchor>();
 
-                // Wait for localization because SaveAnchorAsync() requires the anchor to be localized first.
                 while (true)
                 {
-                    if (m_spatialAnchor == null)
-                    {
-                        // Spatial Anchor destroys itself when creation fails.
-                        yield break;
-                    }
-                    if (m_spatialAnchor.Localized)
-                    {
-                        break;
-                    }
+                    if (m_spatialAnchor == null) yield break;
+                    if (m_spatialAnchor.Localized) break;
                     yield return null;
                 }
 
-                // Save the anchor.
                 var awaiter = m_spatialAnchor.SaveAnchorAsync().GetAwaiter();
-                while (!awaiter.IsCompleted)
-                {
-                    yield return null;
-                }
+                while (!awaiter.IsCompleted) yield return null;
+
                 var saveAnchorResult = awaiter.GetResult();
                 if (!saveAnchorResult.Success)
                 {
@@ -126,7 +105,6 @@ namespace PassthroughCameraSamples.MultiObjectDetection
 
             IEnumerator RestoreSpatialAnchorTracking()
             {
-                // Try to restore spatial anchor tracking. If restoration fails, erase it.
                 LogSpatialAnchor("tracking was lost, restoring...");
                 const int numRetries = 20;
                 for (int i = 0; i < numRetries; i++)
@@ -139,14 +117,10 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                     }
 
                     var unboundAnchors = new List<OVRSpatialAnchor.UnboundAnchor>(1);
-                    var awaiter = OVRSpatialAnchor.LoadUnboundAnchorsAsync(new[]
-                    {
-                        m_spatialAnchor.Uuid
-                    }, unboundAnchors).GetAwaiter();
-                    while (!awaiter.IsCompleted)
-                    {
-                        yield return null;
-                    }
+                    var awaiter = OVRSpatialAnchor.LoadUnboundAnchorsAsync(
+                        new[] { m_spatialAnchor.Uuid }, unboundAnchors).GetAwaiter();
+                    while (!awaiter.IsCompleted) yield return null;
+
                     var loadResult = awaiter.GetResult();
                     if (!loadResult.Success)
                     {
@@ -164,11 +138,9 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                         LogSpatialAnchor($"tracking is not restored, retrying ({i})");
                         continue;
                     }
-
                     LogSpatialAnchor("tracking was restored successfully");
                     yield break;
                 }
-
                 LogSpatialAnchor($"tracking restoration failed after {numRetries} retries", LogType.Warning);
                 EraseSpatialAnchor();
             }
@@ -182,7 +154,6 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                 m_spatialAnchor.EraseAnchorAsync();
                 DestroyImmediate(m_spatialAnchor);
                 m_spatialAnchor = null;
-
                 CleanMarkers();
                 m_uiInference.ClearAnnotations();
             }
@@ -192,11 +163,12 @@ namespace PassthroughCameraSamples.MultiObjectDetection
         {
             LogSpatialAnchor("CleanMarkers");
             foreach (var e in m_spawnedEntities)
-            {
                 Destroy(e.gameObject);
-            }
             m_spawnedEntities.Clear();
             OnObjectsIdentified?.Invoke(-1);
+
+            // Unlock all 3D boxes so they resume live tracking
+            m_box3DManager?.UnlockAll();
         }
 
         private static void LogSpatialAnchor(string message, LogType logType = LogType.Log)
@@ -204,22 +176,28 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             Debug.unityLogger.Log(logType, $"{nameof(OVRSpatialAnchor)}: {message}");
         }
 
-        /// <summary>
-        /// Spwan 3d markers for the detected objects
-        /// </summary>
         private void SpawnCurrentDetectedObjects()
         {
             var newCount = 0;
-            foreach (SentisInferenceUiManager.BoundingBoxData box in m_uiInference.m_boxDrawn)
+            foreach (var box in m_uiInference.m_boxDrawn)
             {
                 if (!HasExistingMarkerInBoundingBox(box))
                 {
                     LogSpatialAnchor($"spawn marker {box.ClassName}");
-                    var marker = Instantiate(m_spawnMarker, box.BoxRectTransform.position, box.BoxRectTransform.rotation, m_uiInference.ContentParent);
-                    marker.GetComponent<DetectionSpawnMarkerAnim>().SetYoloClassName(box.ClassName);
 
+                    var marker = Instantiate(
+                        m_spawnMarker,
+                        box.BoxRectTransform.position,
+                        box.BoxRectTransform.rotation,
+                        m_uiInference.ContentParent);
+
+                    marker.GetComponent<DetectionSpawnMarkerAnim>().SetYoloClassName(box.ClassName);
                     m_spawnedEntities.Add(marker);
                     newCount++;
+
+                    // ── Lock the 3D box at the same world position ───────────
+                    // This freezes the wireframe cuboid so it stops updating.
+                    m_box3DManager?.LockBox(box.ClassId, box.BoxRectTransform.position);
                 }
             }
             OnObjectsIdentified?.Invoke(newCount);
@@ -236,17 +214,13 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                         var currentBox = new Rect(
                             -sizeDelta.x * 0.5f,
                             -sizeDelta.y * 0.5f,
-                            sizeDelta.x,
-                            sizeDelta.y
-                        );
+                             sizeDelta.x,
+                             sizeDelta.y);
 
                         if (currentBox.Contains(localPos))
-                        {
                             return true;
-                        }
                     }
                 }
-
                 return false;
             }
         }
