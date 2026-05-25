@@ -24,7 +24,8 @@ EditorBuildSettings:
     path: Assets/PassthroughCameraApiSamples/ShaderSample/ShaderSample.unity
     guid: 708e8dca6055146b28afe2481f141457
   m_configObjects:
-    Unity.XR.Oculus.Settings: {fileID: 11400000, guid: f2bf97b3acdb64248a707c407c9fc54e, type: 2}
+    Unity.XR.Oculus.Settings: {fileID: 11400000, guid: c829e7d649df01e468c7d9053084c067, type: 2}
+    com.unity.xr.arfoundation.simulation_settings: {fileID: 11400000, guid: 70e409d2eaa0188479d89e41c05c73ae, type: 2}
     com.unity.xr.management.loader_settings: {fileID: 11400000, guid: a971eac5e950046e586c5e153e32d05c, type: 2}
     com.unity.xr.openxr.settings4: {fileID: 11400000, guid: 9165b3c3dec8d446f9b11d1a99b6e245, type: 2}
   m_UseUCBPForAssetBundles: 0

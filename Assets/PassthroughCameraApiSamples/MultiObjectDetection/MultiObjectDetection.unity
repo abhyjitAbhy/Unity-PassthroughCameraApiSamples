@@ -312,6 +312,71 @@ MonoBehaviour:
   installationRoutineCheckpoint:
     _installationRoutineId: 
     _installationVariants: []
+--- !u!1001 &66894734
+PrefabInstance:
+  m_ObjectHideFlags: 0
+  serializedVersion: 2
+  m_Modification:
+    serializedVersion: 3
+    m_TransformParent: {fileID: 0}
+    m_Modifications:
+    - target: {fileID: 760547216562793868, guid: ebc00b8c510637c44a123c30eddf06b6, type: 3}
+      propertyPath: m_LocalPosition.x
+      value: 364.94974
+      objectReference: {fileID: 0}
+    - target: {fileID: 760547216562793868, guid: ebc00b8c510637c44a123c30eddf06b6, type: 3}
+      propertyPath: m_LocalPosition.y
+      value: 147.99538
+      objectReference: {fileID: 0}
+    - target: {fileID: 760547216562793868, guid: ebc00b8c510637c44a123c30eddf06b6, type: 3}
+      propertyPath: m_LocalPosition.z
+      value: 74.715454
+      objectReference: {fileID: 0}
+    - target: {fileID: 760547216562793868, guid: ebc00b8c510637c44a123c30eddf06b6, type: 3}
+      propertyPath: m_LocalRotation.w
+      value: 1
+      objectReference: {fileID: 0}
+    - target: {fileID: 760547216562793868, guid: ebc00b8c510637c44a123c30eddf06b6, type: 3}
+      propertyPath: m_LocalRotation.x
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 760547216562793868, guid: ebc00b8c510637c44a123c30eddf06b6, type: 3}
+      propertyPath: m_LocalRotation.y
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 760547216562793868, guid: ebc00b8c510637c44a123c30eddf06b6, type: 3}
+      propertyPath: m_LocalRotation.z
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 760547216562793868, guid: ebc00b8c510637c44a123c30eddf06b6, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.x
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 760547216562793868, guid: ebc00b8c510637c44a123c30eddf06b6, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.y
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 760547216562793868, guid: ebc00b8c510637c44a123c30eddf06b6, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.z
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 3180743389921538238, guid: ebc00b8c510637c44a123c30eddf06b6, type: 3}
+      propertyPath: m_Name
+      value: 3dobb
+      objectReference: {fileID: 0}
+    - target: {fileID: 8656877668955653093, guid: ebc00b8c510637c44a123c30eddf06b6, type: 3}
+      propertyPath: m_uiInference
+      value: 
+      objectReference: {fileID: 1711459072}
+    - target: {fileID: 8656877668955653093, guid: ebc00b8c510637c44a123c30eddf06b6, type: 3}
+      propertyPath: m_envDepthManager
+      value: 
+      objectReference: {fileID: 1721288812}
+    m_RemovedComponents: []
+    m_RemovedGameObjects: []
+    m_AddedGameObjects: []
+    m_AddedComponents: []
+  m_SourcePrefab: {fileID: 100100000, guid: ebc00b8c510637c44a123c30eddf06b6, type: 3}
 --- !u!1001 &91842641
 PrefabInstance:
   m_ObjectHideFlags: 0
@@ -1123,9 +1188,9 @@ MonoBehaviour:
   requestBodyTrackingPermissionOnStartup: 0
   requestFaceTrackingPermissionOnStartup: 0
   requestEyeTrackingPermissionOnStartup: 0
-  requestScenePermissionOnStartup: 0
+  requestScenePermissionOnStartup: 1
   requestRecordAudioPermissionOnStartup: 0
-  requestPassthroughCameraAccessPermissionOnStartup: 0
+  requestPassthroughCameraAccessPermissionOnStartup: 1
   _localDimming: 1
   _trackingOriginType: 1
   usePositionTracking: 1
@@ -1189,6 +1254,11 @@ Transform:
   - {fileID: 632844192}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!1 &1672552460 stripped
+GameObject:
+  m_CorrespondingSourceObject: {fileID: 5464317018167149569, guid: 749c2b64d9125458da0686ace4bec00b, type: 3}
+  m_PrefabInstance: {fileID: 1721288808}
+  m_PrefabAsset: {fileID: 0}
 --- !u!114 &1711459072 stripped
 MonoBehaviour:
   m_CorrespondingSourceObject: {fileID: 2184060436030677583, guid: 927c1b782bb796b4b9b433d533cbccca, type: 3}
@@ -1270,19 +1340,38 @@ PrefabInstance:
     m_RemovedComponents: []
     m_RemovedGameObjects: []
     m_AddedGameObjects: []
-    m_AddedComponents: []
+    m_AddedComponents:
+    - targetCorrespondingSourceObject: {fileID: 5464317018167149569, guid: 749c2b64d9125458da0686ace4bec00b, type: 3}
+      insertIndex: -1
+      addedObject: {fileID: 1721288812}
   m_SourcePrefab: {fileID: 100100000, guid: 749c2b64d9125458da0686ace4bec00b, type: 3}
 --- !u!114 &1721288809 stripped
 MonoBehaviour:
   m_CorrespondingSourceObject: {fileID: 1924335826680339430, guid: 749c2b64d9125458da0686ace4bec00b, type: 3}
   m_PrefabInstance: {fileID: 1721288808}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 0}
+  m_GameObject: {fileID: 1672552460}
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 0cc36683f00754ee3ba9303b5060e815, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+--- !u!114 &1721288812
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1672552460}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 71a155ece80369d4e99bdaf5e59169b5, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  _occlusionShadersMode: 2
+  _removeHands: 0
+  CustomTrackingSpace: {fileID: 0}
+  <MaskMeshFilters>k__BackingField: []
 --- !u!1 &1744462752
 GameObject:
   m_ObjectHideFlags: 0
@@ -2045,3 +2134,4 @@ SceneRoots:
   - {fileID: 1721288808}
   - {fileID: 1373946500}
   - {fileID: 1884619606}
+  - {fileID: 66894734}

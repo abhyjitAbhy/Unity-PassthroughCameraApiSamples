@@ -1,0 +1,125 @@
+// DepthSampler.compute — FIXED
+//
+// KEY CHANGES vs previous version:
+//
+//  1. Renamed parameter 'linear' → 'linDepth' everywhere.
+//     'linear' is a reserved storage-class keyword in HLSL/Vulkan — caused
+//     "unexpected token 'linear'" compile errors on Quest (Vulkan backend).
+//
+//  2. Mask is now in EYE-CAMERA UV space (screen space from YOLO).
+//     We warp each depth texel back into eye-camera clip space using
+//     _DepthVPInv (depth cam) + _EyeVP (eye cam) to check if it falls
+//     inside the YOLO bounding box — instead of assuming screen UV == depth UV
+//     (which is WRONG because depth sensor and RGB camera have different FOV/pose).
+//
+//  3. Depth is sampled from _EnvironmentDepthTexture (raw, red channel only).
+//     This is the 320x320 Texture2DArray set by the Meta runtime every frame.
+//     DepthTextureProvider blits slice 0 into a flat RFloat RT before dispatch.
+//     ZBufferParams formula: linearMetres = ZBuf.x / rawR - ZBuf.y
+//
+//  4. _EyeMaskRect replaces the CPU Texture2D mask entirely — no more per-frame
+//     CPU Texture2D alloc/upload/destroy. The rect (minU, minV, maxU, maxV) in
+//     normalised eye-camera screen space is passed as a float4.
+
+#pragma kernel ExtractMaskedDepth
+
+// ── inputs ──────────────────────────────────────────────────────────────────
+
+// Mono RFloat blit of _EnvironmentDepthTexture slice 0 (320x320).
+// Red channel holds raw depth. Set by DepthTextureProvider each frame.
+Texture2D<float>  _DepthTex;
+
+// Depth-camera inverse VP: (depthProj * depthView).inverse
+// Built from XR.Oculus.Utils.GetEnvironmentalDepthFrameDesc(0) FOV + pose.
+// Unprojected point = _DepthVPInv * float4(ndcX, ndcY, clipZ, 1) / w
+float4x4          _DepthVPInv;
+
+// Eye-camera VP matrix: Camera.main projectionMatrix * worldToCameraMatrix
+// Used to re-project the unprojected world point into eye-camera clip space
+// so we can test whether it falls inside the YOLO bounding box rect.
+float4x4          _EyeVP;
+
+// YOLO bounding box in normalised eye-camera screen UV [0,1], bottom-left origin.
+// x=minU, y=minV, z=maxU, w=maxV
+float4            _EyeMaskRect;
+
+// _EnvironmentDepthZBufferParams set globally by Meta runtime each frame.
+// x = far/(far-near),  y = far*near/(near-far)
+// linearMetres = x / rawDepth - y
+float4            _ZBufferParams;
+
+int2              _DepthTexSize;   // width, height of _DepthTex (e.g. 320,320)
+float             _MaxDepthMeters;
+int               _MaxPoints;
+
+// ── outputs ─────────────────────────────────────────────────────────────────
+RWStructuredBuffer<float3> _PointsOut;
+RWByteAddressBuffer        _PointCount;  // InterlockedAdd at byte 0
+
+// ── helpers ──────────────────────────────────────────────────────────────────
+
+// Raw stored depth value → linear metres.
+// Guard: rawD == 0 means no sensor data for that pixel.
+float RawToLinearMetres(float rawD)
+{
+    if (rawD == 0.0f) return 0.0f;
+    return _ZBufferParams.x / rawD - _ZBufferParams.y;
+}
+
+// Linear metres → clip-space Z (for VPinv unproject round-trip).
+// Inverse of above: rawD = x / (linDepth + y)
+float LinearMetresToClipZ(float linDepth)
+{
+    return _ZBufferParams.x / (linDepth + _ZBufferParams.y);
+}
+
+// ── kernel ───────────────────────────────────────────────────────────────────
+[numthreads(16, 16, 1)]
+void ExtractMaskedDepth(uint3 id : SV_DispatchThreadID)
+{
+    if ((int)id.x >= _DepthTexSize.x || (int)id.y >= _DepthTexSize.y)
+        return;
+
+    // ── 1. Sample raw depth (red channel) ────────────────────────────────
+    float rawD = _DepthTex.Load(int3((int)id.x, (int)id.y, 0));
+    if (rawD == 0.0f)
+        return;
+
+    // ── 2. Raw → linear metres ────────────────────────────────────────────
+    float linDepth = RawToLinearMetres(rawD);
+    if (linDepth < 0.1f || linDepth > _MaxDepthMeters)
+        return;
+
+    // ── 3. Depth texel → NDC (depth camera space) ─────────────────────────
+    // Depth RT: origin top-left, Y down.  NDC: Y up (+1 at top).
+    float ndcX =  (((float)id.x + 0.5f) / (float)_DepthTexSize.x) * 2.0f - 1.0f;
+    float ndcY = -(((float)id.y + 0.5f) / (float)_DepthTexSize.y) * 2.0f + 1.0f;
+
+    // ── 4. Depth NDC → world space via depth camera VPinv ─────────────────
+    float  clipZ       = LinearMetresToClipZ(linDepth);
+    float4 depthClip   = float4(ndcX, ndcY, clipZ, 1.0f);
+    float4 hWorld      = mul(_DepthVPInv, depthClip);
+    float3 worldPos    = hWorld.xyz / hWorld.w;
+
+    // ── 5. World → eye-camera clip space ──────────────────────────────────
+    // Re-project the world point into the eye (RGB) camera to get the screen
+    // UV that YOLO sees — this is the correct reprojection, not a direct
+    // depth-texel-to-screen-UV mapping.
+    float4 eyeClip     = mul(_EyeVP, float4(worldPos, 1.0f));
+    if (eyeClip.w <= 0.0f)
+        return; // behind eye camera
+
+    float2 eyeNDC      = eyeClip.xy / eyeClip.w;           // [-1, 1]
+    float2 eyeUV       = eyeNDC * 0.5f + 0.5f;             // [0, 1], bottom-left
+
+    // ── 6. YOLO bounding box test ─────────────────────────────────────────
+    if (eyeUV.x < _EyeMaskRect.x || eyeUV.x > _EyeMaskRect.z ||
+        eyeUV.y < _EyeMaskRect.y || eyeUV.y > _EyeMaskRect.w)
+        return;
+
+    // ── 7. Atomic append ──────────────────────────────────────────────────
+    uint idx;
+    _PointCount.InterlockedAdd(0, 1u, idx);
+    if ((int)idx < _MaxPoints)
+        _PointsOut[idx] = worldPos;
+}
