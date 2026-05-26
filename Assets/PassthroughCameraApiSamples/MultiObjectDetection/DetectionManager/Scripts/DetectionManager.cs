@@ -18,8 +18,8 @@ namespace PassthroughCameraSamples.MultiObjectDetection
         [SerializeField] private DetectionSpawnMarkerAnim m_spawnMarker;
         [SerializeField] private SentisInferenceUiManager m_uiInference;
 
-        // Wire this in the Inspector to the same Box3DManager used by SentisInferenceRunManager
         [SerializeField] private Box3DManager m_box3DManager;
+        [SerializeField] private GameObject Gameobject_box3DManager;
 
         [Space(10)]
         public UnityEvent<int> OnObjectsIdentified;
@@ -28,6 +28,10 @@ namespace PassthroughCameraSamples.MultiObjectDetection
         private bool m_isStarted;
         internal OVRSpatialAnchor m_spatialAnchor;
         private bool m_isHeadsetTracking;
+
+        // Tracks whether the right-hand pinch is currently held so we only
+        // fire ToggleGlobalFreeze once per pinch gesture (rising-edge only).
+        private bool m_rightPinchWasDown;
 
         private void Awake()
         {
@@ -42,7 +46,10 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             OVRManager.TrackingLost -= OnTrackingLost;
             OVRManager.TrackingAcquired -= OnTrackingAcquired;
         }
-
+        private void Start()
+        {
+            m_box3DManager = Gameobject_box3DManager.GetComponent<Box3DManager>();
+        }
         private void OnTrackingLost() => m_isHeadsetTracking = false;
         private void OnTrackingAcquired() => m_isHeadsetTracking = true;
 
@@ -52,18 +59,53 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             {
                 if (m_cameraAccess.IsPlaying)
                     m_isStarted = true;
-            }
-            else
-            {
-                // Button A — spawn markers AND lock the matching 3D boxes
-                if (InputManager.IsButtonADownOrPinchStarted())
-                    SpawnCurrentDetectedObjects();
+                return;
             }
 
-            // Button B — clear markers AND unlock all 3D boxes
+            // ── Button A / left pinch — spawn markers + lock matching boxes ──
+            if (InputManager.IsButtonADownOrPinchStarted())
+                SpawnCurrentDetectedObjects();
+
+            // ── Button B / middle-finger pinch — clear markers + unlock boxes ─
             if (InputManager.IsButtonBDownOrMiddleFingerPinchStarted())
                 CleanMarkers();
+
+            // ── Right-hand index pinch — toggle global freeze on all 3D boxes ─
+            //
+            // Rising-edge detection: only fires once when the pinch starts,
+            // not every frame while it is held.
+            //
+            // Controller: right index trigger
+            // Hand tracking: right hand index-tip pinch (OVRHand strength > 0.9)
+            bool rightPinchDown = IsRightHandPinchDown();
+            if (rightPinchDown && !m_rightPinchWasDown)
+                m_box3DManager?.ToggleGlobalFreeze();
+            m_rightPinchWasDown = rightPinchDown;
         }
+
+        // ── Right-pinch detection ────────────────────────────────────────────
+
+        /// <summary>
+        /// Returns true while the right-hand index pinch (or right controller
+        /// index trigger) is held.  The caller does rising-edge detection so
+        /// ToggleGlobalFreeze fires only once per gesture.
+        /// </summary>
+        private static bool IsRightHandPinchDown()
+        {
+            // Controller mode: right index trigger past halfway
+            if (OVRInput.Get(OVRInput.RawAxis1D.RIndexTrigger) > 0.5f)
+                return true;
+
+            // Hand-tracking mode: right index-tip pinch strength
+            // OVRPlugin.GetHandState reports pinch strength in [0,1];
+            // we use OVRInput's high-level button which maps to the same thing.
+            if (OVRInput.Get(OVRInput.Button.PrimaryHandTrigger, OVRInput.Controller.RHand))
+                return true;
+
+            return false;
+        }
+
+        // ── Spatial anchor management ────────────────────────────────────────
 
         private IEnumerator UpdateSpatialAnchor()
         {
@@ -93,10 +135,10 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                 var awaiter = m_spatialAnchor.SaveAnchorAsync().GetAwaiter();
                 while (!awaiter.IsCompleted) yield return null;
 
-                var saveAnchorResult = awaiter.GetResult();
-                if (!saveAnchorResult.Success)
+                var result = awaiter.GetResult();
+                if (!result.Success)
                 {
-                    LogSpatialAnchor($"SaveAnchorAsync() failed {saveAnchorResult}", LogType.Error);
+                    LogSpatialAnchor($"SaveAnchorAsync() failed {result}", LogType.Error);
                     EraseSpatialAnchor();
                     yield break;
                 }
@@ -132,6 +174,7 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                         LogSpatialAnchor($"LoadUnboundAnchorsAsync() unexpected count:{unboundAnchors.Count}, retrying ({i})", LogType.Error);
                         continue;
                     }
+
                     yield return null;
                     if (!m_spatialAnchor.IsTracked)
                     {
@@ -167,7 +210,7 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             m_spawnedEntities.Clear();
             OnObjectsIdentified?.Invoke(-1);
 
-            // Unlock all 3D boxes so they resume live tracking
+            // Unlock all 3D boxes (Button B always fully unlocks)
             m_box3DManager?.UnlockAll();
         }
 
@@ -195,8 +238,7 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                     m_spawnedEntities.Add(marker);
                     newCount++;
 
-                    // ── Lock the 3D box at the same world position ───────────
-                    // This freezes the wireframe cuboid so it stops updating.
+                    // Lock the specific 3D box at this world position
                     m_box3DManager?.LockBox(box.ClassId, box.BoxRectTransform.position);
                 }
             }

@@ -1304,9 +1304,14 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   m_cameraAccess: {fileID: 1373946501}
-  m_depthSampler: {fileID: 1672552463}
+  m_raycastManager: {fileID: 1721288809}
   m_box3DPrefab: {fileID: 2553079567275086138, guid: ff84799d16afc6849882a9cd3704c051, type: 3}
-  m_boxPersistSeconds: 1.42
+  m_gridSize: 5
+  m_clusterTolerance: 0.12
+  m_minHits: 5
+  m_boxPersistSeconds: 5
+  m_poseAlpha: 0.25
+  m_rotationAlpha: 0.2
   m_allowedClassIds: 
 --- !u!4 &1672552462
 Transform:
@@ -2149,6 +2154,14 @@ PrefabInstance:
       value: 
       objectReference: {fileID: 6846995557286463107}
     - target: {fileID: 2681575481727882275, guid: 927c1b782bb796b4b9b433d533cbccca, type: 3}
+      propertyPath: OnnxModel
+      value: 
+      objectReference: {fileID: 5022602860645237092, guid: 1fcb3775be00dd14db49bd332760dcdd, type: 3}
+    - target: {fileID: 2681575481727882275, guid: 927c1b782bb796b4b9b433d533cbccca, type: 3}
+      propertyPath: m_sentisModel
+      value: 
+      objectReference: {fileID: 5022602860645237092, guid: 1fcb3775be00dd14db49bd332760dcdd, type: 3}
+    - target: {fileID: 2681575481727882275, guid: 927c1b782bb796b4b9b433d533cbccca, type: 3}
       propertyPath: m_box3DManager
       value: 
       objectReference: {fileID: 1672552461}
@@ -2160,6 +2173,10 @@ PrefabInstance:
       propertyPath: m_uiMenuManager
       value: 
       objectReference: {fileID: 6846995557286463107}
+    - target: {fileID: 2681575481727882275, guid: 927c1b782bb796b4b9b433d533cbccca, type: 3}
+      propertyPath: m_scoreThreshold
+      value: 0.5
+      objectReference: {fileID: 0}
     - target: {fileID: 2681575481727882275, guid: 927c1b782bb796b4b9b433d533cbccca, type: 3}
       propertyPath: m_detectionManager
       value: 
