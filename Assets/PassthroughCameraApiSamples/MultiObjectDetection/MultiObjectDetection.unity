@@ -1304,9 +1304,14 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   m_cameraAccess: {fileID: 1373946501}
-  m_depthSampler: {fileID: 1672552463}
+  m_raycastManager: {fileID: 1721288809}
   m_box3DPrefab: {fileID: 2553079567275086138, guid: ff84799d16afc6849882a9cd3704c051, type: 3}
+  m_gridSize: 9
+  m_clusterTolerance: 0.08
+  m_minHits: 10
   m_boxPersistSeconds: 1.42
+  m_poseAlpha: 0.25
+  m_rotationAlpha: 0.2
   m_allowedClassIds: 
 --- !u!4 &1672552462
 Transform:
