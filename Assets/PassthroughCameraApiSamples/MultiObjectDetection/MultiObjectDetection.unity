@@ -1032,6 +1032,10 @@ PrefabInstance:
     serializedVersion: 3
     m_TransformParent: {fileID: 1629220523}
     m_Modifications:
+    - target: {fileID: 2139185334, guid: 0a7d2469f24041c4284c66706f84c45e, type: 3}
+      propertyPath: m_IsActive
+      value: 1
+      objectReference: {fileID: 0}
     - target: {fileID: 435407831072319256, guid: 0a7d2469f24041c4284c66706f84c45e, type: 3}
       propertyPath: _leftEyeAnchor
       value: 
@@ -1479,6 +1483,9 @@ MonoBehaviour:
   showBoundingBoxes: 1
   showLabels: 1
   labelScale: 0.5
+  _poseAlpha: 0.25
+  _rotationAlpha: 0.2
+  _persistSeconds: 2
 --- !u!114 &1088857633
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -1554,10 +1561,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 5123ffdcf610ef14693a08b6bb201af5, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  lockedBoxPrefab: {fileID: 4199183768428282981, guid: be69472e7a9b58243aa0493fa78acef1, type: 3}
-  anchorIndicatorPrefab: {fileID: 4199183768428282981, guid: be69472e7a9b58243aa0493fa78acef1, type: 3}
   debugText: {fileID: 194464895}
-  showLockedLabel: 1
   spamLogs: 1
 --- !u!114 &1088857637
 MonoBehaviour:
@@ -2068,6 +2072,65 @@ PrefabInstance:
     m_AddedGameObjects: []
     m_AddedComponents: []
   m_SourcePrefab: {fileID: 100100000, guid: 749c2b64d9125458da0686ace4bec00b, type: 3}
+--- !u!1 &1729216800
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1729216802}
+  - component: {fileID: 1729216801}
+  m_Layer: 0
+  m_Name: 3dboundingboxmanager
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &1729216801
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1729216800}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: da2c132026e9c0b499e338f96088a166, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  leftHand: {fileID: 46876044}
+  rightHand: {fileID: 1924298972}
+  leftSkeleton: {fileID: 46876043}
+  rightSkeleton: {fileID: 1924298971}
+  hoverRadius: 0.2
+  fingerDirectionWeight: 0.85
+  raySmoothing: 0.18
+  pinchThreshold: 0.03
+  pinchReleaseThreshold: 0.05
+  scaleSensitivity: 1
+  twoHandActivationRadius: 1.5
+  rayWidth: 0.01
+  rayHoverColor: {r: 0.4, g: 0.9, b: 1, a: 0.85}
+  rayGrabColor: {r: 0, g: 1, b: 0.5, a: 1}
+  reticleRadius: 0.012
+--- !u!4 &1729216802
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1729216800}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &1744462752
 GameObject:
   m_ObjectHideFlags: 0
@@ -2661,3 +2724,4 @@ SceneRoots:
   - {fileID: 1672552462}
   - {fileID: 66894736}
   - {fileID: 1248874676}
+  - {fileID: 1729216802}

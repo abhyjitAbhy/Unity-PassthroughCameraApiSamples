@@ -1,21 +1,6 @@
-/*
- * FULL DEBUG VERSION
- * SegmentationAnchorController_Debug.cs
- *
- * Debug goals:
- * 1. Verify pinch detection works
- * 2. Verify Update() runs
- * 3. Verify BoundingBoxMarker exists
- * 4. Verify LockAll() executes
- * 5. Verify prefab spawning works
- * 6. Verify segmentation freeze works
- * 7. Verify unlock works
- * 8. Verify anchor state
- * 9. Show everything in TMP + Console
- */
-
 using System.Collections;
 using System.Collections.Generic;
+using PassthroughCameraSamples.MultiObjectDetection;
 using TMPro;
 using UnityEngine;
 
@@ -26,74 +11,45 @@ namespace Meta.XR.BuildingBlocks.AIBlocks
     {
 #if MRUK_INSTALLED
 
-        // =========================================================
-        // INSPECTOR
-        // =========================================================
-
-        [Header("Visuals")]
-        [SerializeField] private GameObject lockedBoxPrefab;
-        [SerializeField] private GameObject anchorIndicatorPrefab;
-
         [Header("UI")]
         [SerializeField] private TextMeshProUGUI debugText;
 
         [Header("Settings")]
-        [SerializeField] private bool showLockedLabel = true;
         [SerializeField] private bool spamLogs = true;
-
-        // =========================================================
-        // RUNTIME
-        // =========================================================
 
         private ImageSegmentationAgent _agent;
         private HandPinchDetector _pinchDetector;
+        private ImageSegmentationVisualizer _visualizer;
 
         private OVRSpatialAnchor _spatialAnchor;
 
         private bool _isHeadsetTracking = true;
         private bool _isLocked;
-
         private int _savedSegmentEveryNFrames;
 
-        private readonly List<GameObject> _lockedVisuals = new();
-        private readonly List<GameObject> _anchorIndicators = new();
-
-        // Debug
+        private readonly List<GameObject> _frozenBoxes = new();
         private string _debugInfo = "";
         private int _frameCounter;
 
-        // =========================================================
-        // UNITY
-        // =========================================================
-
         private void Awake()
         {
-            Log("AWAKE START");
-
             _agent = GetComponent<ImageSegmentationAgent>();
             _pinchDetector = GetComponent<HandPinchDetector>();
+            _visualizer = GetComponent<ImageSegmentationVisualizer>();
 
-            if (_agent == null)
-                LogError("ImageSegmentationAgent MISSING");
-
-            if (_pinchDetector == null)
-                LogError("HandPinchDetector MISSING");
-
-            if (lockedBoxPrefab == null)
-                LogError("lockedBoxPrefab NOT ASSIGNED");
+            if (_agent == null) LogError("ImageSegmentationAgent MISSING");
+            if (_pinchDetector == null) LogError("HandPinchDetector MISSING");
+            if (_visualizer == null) LogError("ImageSegmentationVisualizer MISSING");
 
             StartCoroutine(UpdateSpatialAnchor());
 
             OVRManager.TrackingLost += OnTrackingLost;
             OVRManager.TrackingAcquired += OnTrackingAcquired;
-
-            Log("AWAKE COMPLETE");
         }
 
         private void OnDestroy()
         {
             EraseSpatialAnchor();
-
             OVRManager.TrackingLost -= OnTrackingLost;
             OVRManager.TrackingAcquired -= OnTrackingAcquired;
         }
@@ -102,221 +58,28 @@ namespace Meta.XR.BuildingBlocks.AIBlocks
         {
             _frameCounter++;
 
-            if (_pinchDetector == null)
-            {
-                LogError("Pinch detector NULL in Update()");
-                return;
-            }
-
-            // =====================================================
-            // DEBUG PINCH STATES
-            // =====================================================
+            if (_pinchDetector == null) return;
 
             bool indexPinch = _pinchDetector.rightIndexPinch;
             bool middlePinch = _pinchDetector.rightMiddlePinch;
-
-            // =====================================================
-            // TMP DEBUG
-            // =====================================================
 
             if (debugText != null)
             {
                 debugText.text =
                     $"FRAME: {_frameCounter}\n\n" +
-
-                    $"RIGHT INDEX PINCH: {indexPinch}\n" +
-                    $"RIGHT MIDDLE PINCH: {middlePinch}\n\n" +
-
+                    $"INDEX PINCH:  {indexPinch}\n" +
+                    $"MIDDLE PINCH: {middlePinch}\n\n" +
                     $"LOCKED: {_isLocked}\n" +
                     $"HEADSET TRACKING: {_isHeadsetTracking}\n\n" +
-
-                    $"ANCHOR EXISTS: {_spatialAnchor != null}\n" +
-                    $"ANCHOR TRACKED: {(_spatialAnchor != null ? _spatialAnchor.IsTracked : false)}\n\n" +
-
-                    $"LOCKED VISUALS: {_lockedVisuals.Count}\n" +
-                    $"ANCHOR INDICATORS: {_anchorIndicators.Count}\n\n" +
-
-                    $"SEGMENT EVERY N FRAMES: {(_agent != null ? _agent.segmentEveryNFrames : -1)}\n\n" +
-
-                    $"LAST DEBUG:\n{_debugInfo}";
+                    $"ANCHOR EXISTS:  {_spatialAnchor != null}\n" +
+                    $"ANCHOR TRACKED: {(_spatialAnchor != null && _spatialAnchor.IsTracked)}\n\n" +
+                    $"FROZEN BOXES: {_frozenBoxes.Count}\n\n" +
+                    $"SEGMENT N: {(_agent != null ? _agent.segmentEveryNFrames : -1)}\n\n" +
+                    $"LAST: {_debugInfo}";
             }
 
-            // =====================================================
-            // LOCK
-            // =====================================================
-
-            if (indexPinch)
-            {
-                Log("RIGHT INDEX PINCH DETECTED");
-                LockAll();
-            }
-
-            // =====================================================
-            // UNLOCK
-            // =====================================================
-
-            if (middlePinch)
-            {
-                Log("RIGHT MIDDLE PINCH DETECTED");
-                UnlockAll();
-            }
-        }
-
-        // =========================================================
-        // TRACKING
-        // =========================================================
-
-        private void OnTrackingLost()
-        {
-            _isHeadsetTracking = false;
-            LogWarning("TRACKING LOST");
-        }
-
-        private void OnTrackingAcquired()
-        {
-            _isHeadsetTracking = true;
-            Log("TRACKING ACQUIRED");
-        }
-
-        // =========================================================
-        // ANCHOR LOOP
-        // =========================================================
-
-        private IEnumerator UpdateSpatialAnchor()
-        {
-            Log("ANCHOR COROUTINE STARTED");
-
-            while (true)
-            {
-                yield return null;
-
-                if (_spatialAnchor == null)
-                {
-                    Log("CREATING SPATIAL ANCHOR");
-
-                    yield return CreateSpatialAnchorAndSave();
-
-                    if (_spatialAnchor == null)
-                    {
-                        LogError("ANCHOR CREATION FAILED");
-                        continue;
-                    }
-                }
-
-                if (!_spatialAnchor.IsTracked)
-                {
-                    LogWarning("ANCHOR NOT TRACKED");
-                    yield return RestoreSpatialAnchorTracking();
-                }
-            }
-        }
-
-        private IEnumerator CreateSpatialAnchorAndSave()
-        {
-            Log("ADDING OVRSpatialAnchor COMPONENT");
-
-            _spatialAnchor = gameObject.AddComponent<OVRSpatialAnchor>();
-
-            while (true)
-            {
-                if (_spatialAnchor == null)
-                {
-                    LogError("SPATIAL ANCHOR NULL");
-                    yield break;
-                }
-
-                if (_spatialAnchor.Localized)
-                {
-                    Log("ANCHOR LOCALIZED");
-                    break;
-                }
-
-                yield return null;
-            }
-
-            Log("SAVING ANCHOR");
-
-            var awaiter = _spatialAnchor.SaveAnchorAsync().GetAwaiter();
-
-            while (!awaiter.IsCompleted)
-                yield return null;
-
-            var result = awaiter.GetResult();
-
-            if (!result.Success)
-            {
-                LogError($"SAVE FAILED: {result}");
-                EraseSpatialAnchor();
-                yield break;
-            }
-
-            Log("ANCHOR SAVED SUCCESSFULLY");
-        }
-
-        private IEnumerator RestoreSpatialAnchorTracking()
-        {
-            LogWarning("RESTORING TRACKING");
-
-            const int retries = 20;
-
-            for (int i = 0; i < retries; i++)
-            {
-                yield return new WaitForSeconds(1f);
-
-                Log($"TRACKING RETRY {i}");
-
-                if (!_isHeadsetTracking)
-                {
-                    LogWarning("HEADSET NOT TRACKING");
-                    continue;
-                }
-
-                var unboundAnchors =
-                    new List<OVRSpatialAnchor.UnboundAnchor>(1);
-
-                var awaiter =
-                    OVRSpatialAnchor.LoadUnboundAnchorsAsync(
-                        new[] { _spatialAnchor.Uuid },
-                        unboundAnchors
-                    ).GetAwaiter();
-
-                while (!awaiter.IsCompleted)
-                    yield return null;
-
-                var result = awaiter.GetResult();
-
-                if (!result.Success)
-                {
-                    LogError($"LOAD FAILED: {result.Status}");
-                    continue;
-                }
-
-                if (!_spatialAnchor.IsTracked)
-                {
-                    LogWarning("ANCHOR STILL NOT TRACKED");
-                    continue;
-                }
-
-                Log("TRACKING RESTORED");
-                yield break;
-            }
-
-            LogError("TRACKING RESTORE FAILED");
-            EraseSpatialAnchor();
-        }
-
-        private void EraseSpatialAnchor()
-        {
-            if (_spatialAnchor == null)
-                return;
-
-            LogWarning("ERASING SPATIAL ANCHOR");
-
-            _spatialAnchor.EraseAnchorAsync();
-
-            DestroyImmediate(_spatialAnchor);
-
-            _spatialAnchor = null;
+            if (indexPinch) LockAll();
+            if (middlePinch) UnlockAll();
         }
 
         // =========================================================
@@ -325,114 +88,47 @@ namespace Meta.XR.BuildingBlocks.AIBlocks
 
         private void LockAll()
         {
-            Log("LOCK ALL CALLED");
+            if (_isLocked) { LogWarning("ALREADY LOCKED"); return; }
 
-            if (_isLocked)
-            {
-                LogWarning("ALREADY LOCKED");
-                return;
-            }
-
-            var liveBoxes = FindObjectsByType<BoundingBoxMarker>(
+            // Grab every live BoundingBoxMarker currently active in scene
+            var liveMarkers = FindObjectsByType<BoundingBoxMarker>(
                 FindObjectsInactive.Exclude,
                 FindObjectsSortMode.None);
 
-            Log($"FOUND LIVE BOXES: {liveBoxes.Length}");
-
-            if (liveBoxes.Length == 0)
+            if (liveMarkers.Length == 0)
             {
-                LogError("NO BOUNDING BOXES FOUND");
+                LogError("NO LIVE MARKERS FOUND");
                 return;
             }
 
-            if (_agent == null)
-            {
-                LogError("AGENT NULL");
-                return;
-            }
-
-            _savedSegmentEveryNFrames =
-                _agent.segmentEveryNFrames;
-
-            Log($"OLD segmentEveryNFrames: {_savedSegmentEveryNFrames}");
-
+            // Stop segmentation — this stops Draw3D from being invoked,
+            // which means the visualizer will no longer touch _live or _pool
+            _savedSegmentEveryNFrames = _agent.segmentEveryNFrames;
             _agent.segmentEveryNFrames = 0;
 
-            Log("SEGMENTATION DISABLED");
+            // Also disable the visualizer's Update loop so EMA expiry
+            // doesn't reclaim our frozen boxes via the pool
+            if (_visualizer != null)
+                _visualizer.enabled = false;
 
-            _isLocked = true;
+            _frozenBoxes.Clear();
 
-            foreach (var marker in liveBoxes)
+            foreach (var marker in liveMarkers)
             {
-                if (marker == null)
-                {
-                    LogError("MARKER NULL");
-                    continue;
-                }
-
-                if (marker.IsLocked)
-                {
-                    LogWarning("MARKER ALREADY LOCKED");
-                    continue;
-                }
-
                 var go = marker.gameObject;
+                go.transform.SetParent(null, worldPositionStays: true);
+                marker.IsLocked = true;
+                _frozenBoxes.Add(go);
 
-                Log($"PROCESSING OBJECT: {go.name}");
-
-                var pos = go.transform.position;
-                var rot = go.transform.rotation;
-                var scl = go.transform.localScale;
-
-                Log($"POSITION: {pos}");
-
-                if (lockedBoxPrefab == null)
-                {
-                    LogError("LOCKED PREFAB NULL");
-                    continue;
-                }
-
-                var locked =
-                    Instantiate(lockedBoxPrefab, pos, rot);
-
-                if (locked == null)
-                {
-                    LogError("FAILED TO INSTANTIATE LOCKED PREFAB");
-                    continue;
-                }
-
-                locked.transform.localScale = scl;
-
-                var markerComp =
-                    locked.GetComponent<BoundingBoxMarker>();
-
-                if (markerComp == null)
-                {
-                    LogWarning("ADDING BoundingBoxMarker");
-                    markerComp =
-                        locked.AddComponent<BoundingBoxMarker>();
-                }
-
-                markerComp.IsLocked = true;
-
-                _lockedVisuals.Add(locked);
-
-                Log($"LOCKED OBJECT CREATED: {locked.name}");
-
-                if (anchorIndicatorPrefab != null)
-                {
-                    var indicator =
-                        Instantiate(anchorIndicatorPrefab,
-                            pos,
-                            Quaternion.identity);
-
-                    _anchorIndicators.Add(indicator);
-
-                    Log("ANCHOR INDICATOR CREATED");
-                }
+                // ADD THIS — triggers handle spawn
+                var manipulator = go.GetComponent<BoxManipulator>();
+                if (manipulator == null)
+                    manipulator = go.AddComponent<BoxManipulator>();
+                manipulator.Lock();
             }
 
-            Log("LOCK COMPLETE");
+            _isLocked = true;
+            Log($"LOCK COMPLETE — {_frozenBoxes.Count} boxes frozen");
         }
 
         // =========================================================
@@ -441,28 +137,24 @@ namespace Meta.XR.BuildingBlocks.AIBlocks
 
         private void UnlockAll()
         {
-            Log("UNLOCK ALL CALLED");
+            if (!_isLocked) { LogWarning("NOT LOCKED"); return; }
 
-            if (!_isLocked)
+            foreach (var go in _frozenBoxes)
             {
-                LogWarning("NOT LOCKED");
-                return;
+                if (go == null) continue;
+                var manipulator = go.GetComponent<BoxManipulator>();
+                if (manipulator != null) manipulator.Unlock(); // unregisters from BoxInteractionManager + destroys handles
+                Destroy(go);
             }
+            _frozenBoxes.Clear();
 
-            foreach (var obj in _lockedVisuals)
+            // Reset visualizer internal state BEFORE re-enabling
+            // so stale _live/_emaStates references don't block new box creation
+            if (_visualizer != null)
             {
-                if (obj != null)
-                    Destroy(obj);
+                _visualizer.ResetState();
+                _visualizer.enabled = true;
             }
-
-            foreach (var obj in _anchorIndicators)
-            {
-                if (obj != null)
-                    Destroy(obj);
-            }
-
-            _lockedVisuals.Clear();
-            _anchorIndicators.Clear();
 
             if (_agent != null)
             {
@@ -473,44 +165,97 @@ namespace Meta.XR.BuildingBlocks.AIBlocks
             }
 
             _isLocked = false;
-
             Log("UNLOCK COMPLETE");
+        }
+
+        // =========================================================
+        // TRACKING
+        // =========================================================
+
+        private void OnTrackingLost() { _isHeadsetTracking = false; LogWarning("TRACKING LOST"); }
+        private void OnTrackingAcquired() { _isHeadsetTracking = true; Log("TRACKING ACQUIRED"); }
+
+        // =========================================================
+        // ANCHOR
+        // =========================================================
+
+        private IEnumerator UpdateSpatialAnchor()
+        {
+            while (true)
+            {
+                yield return null;
+
+                if (_spatialAnchor == null)
+                {
+                    yield return CreateSpatialAnchorAndSave();
+                    if (_spatialAnchor == null) continue;
+                }
+
+                if (!_spatialAnchor.IsTracked)
+                    yield return RestoreSpatialAnchorTracking();
+            }
+        }
+
+        private IEnumerator CreateSpatialAnchorAndSave()
+        {
+            _spatialAnchor = gameObject.AddComponent<OVRSpatialAnchor>();
+
+            while (_spatialAnchor != null && !_spatialAnchor.Localized)
+                yield return null;
+
+            if (_spatialAnchor == null) yield break;
+
+            var awaiter = _spatialAnchor.SaveAnchorAsync().GetAwaiter();
+            while (!awaiter.IsCompleted) yield return null;
+
+            var result = awaiter.GetResult();
+            if (!result.Success)
+            {
+                LogError($"SAVE FAILED: {result}");
+                EraseSpatialAnchor();
+            }
+            else Log("ANCHOR SAVED");
+        }
+
+        private IEnumerator RestoreSpatialAnchorTracking()
+        {
+            for (int i = 0; i < 20; i++)
+            {
+                yield return new WaitForSeconds(1f);
+
+                if (!_isHeadsetTracking) continue;
+
+                var unboundAnchors = new List<OVRSpatialAnchor.UnboundAnchor>(1);
+                var awaiter = OVRSpatialAnchor.LoadUnboundAnchorsAsync(
+                    new[] { _spatialAnchor.Uuid }, unboundAnchors).GetAwaiter();
+
+                while (!awaiter.IsCompleted) yield return null;
+
+                var result = awaiter.GetResult();
+                if (!result.Success) { LogError($"LOAD FAILED: {result.Status}"); continue; }
+                if (_spatialAnchor.IsTracked) { Log("TRACKING RESTORED"); yield break; }
+            }
+
+            LogError("TRACKING RESTORE FAILED");
+            EraseSpatialAnchor();
+        }
+
+        private void EraseSpatialAnchor()
+        {
+            if (_spatialAnchor == null) return;
+            _spatialAnchor.EraseAnchorAsync();
+            DestroyImmediate(_spatialAnchor);
+            _spatialAnchor = null;
         }
 
         // =========================================================
         // LOGGING
         // =========================================================
 
-        private void Log(string msg)
-        {
-            _debugInfo = msg;
-
-            if (spamLogs)
-                Debug.Log($"[SegmentationAnchorController] {msg}");
-        }
-
-        private void LogWarning(string msg)
-        {
-            _debugInfo = msg;
-
-            Debug.LogWarning(
-                $"[SegmentationAnchorController] {msg}");
-        }
-
-        private void LogError(string msg)
-        {
-            _debugInfo = msg;
-
-            Debug.LogError(
-                $"[SegmentationAnchorController] {msg}");
-        }
+        private void Log(string msg) { _debugInfo = msg; if (spamLogs) Debug.Log($"[SAC] {msg}"); }
+        private void LogWarning(string msg) { _debugInfo = msg; Debug.LogWarning($"[SAC] {msg}"); }
+        private void LogError(string msg) { _debugInfo = msg; Debug.LogError($"[SAC] {msg}"); }
 
 #endif
     }
-
-    // =============================================================
-    // BOUNDING BOX MARKER
-    // =============================================================
-
-
 }
