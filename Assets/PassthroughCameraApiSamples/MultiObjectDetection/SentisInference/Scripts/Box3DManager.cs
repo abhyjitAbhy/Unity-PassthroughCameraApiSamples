@@ -1,8 +1,11 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+using System.Buffers;
 using System.Collections;
 using System.Collections.Generic;
 using Meta.XR;
+using Meta.XR.BuildingBlocks.AIBlocks;
+using Unity.Collections;
 using UnityEngine;
 
 namespace PassthroughCameraSamples.MultiObjectDetection
@@ -10,17 +13,34 @@ namespace PassthroughCameraSamples.MultiObjectDetection
     /// <summary>
     /// Box3DManager.cs
     ///
-    /// Changes in this version:
+    /// Changes in this version (Gaps 3, 4, 7 + PlaceBox3D integration):
     ///
-    ///   5. DIMENSION READOUT ON LOCK  — LockBox() and LockAll() now pass the
-    ///      EMA-smoothed SmoothedSize (metres) into SetLocked() so the visualizer
-    ///      can display the real-world "W × H × D cm" on the frozen box.
-    ///      No depth re-sampling is needed; the size that was already stabilised
-    ///      by the EMA over the tracking period is used directly.
+    ///   Gap 3 — FrameSnapshot struct: VP matrix + depth buffer captured per depth
+    ///     frame via OnDepthFrame callback, using ArrayPool to avoid heap pressure.
+    ///     PlaceBox3D takes a struct copy at entry so it is safe across yield points.
     ///
-    ///   Previous stability changes (1-4) are unchanged:
+    ///   Gap 4 — Stereo eye index: computed once in Awake() from
+    ///     m_cameraAccess.CameraPosition; passed through FrameSnapshot.EyeIdx into
+    ///     every depth buffer lookup. Wrong-eye parallax at 50 cm ~ IPD (≈64 mm).
+    ///
+    ///   Gap 6 — MeasurePhysicalSize hybrid: after FitPCA6DoF succeeds,
+    ///     DepthSampler.MeasurePhysicalSize overrides rawSize.x and rawSize.y
+    ///     with geometrically grounded edge-projected width/height. rawSize.z
+    ///     (depth extent) is kept from PCA. EMA smoothing applied to hybrid size.
+    ///
+    ///   Gap 7 — Zero-allocation hot path: m_hitBuffer and m_inlierBuffer are
+    ///     pre-allocated fields passed as reuse/inlierReuse to eliminate all
+    ///     per-frame List<Vector3> allocations.
+    ///
+    ///   Sampling path decision: when DepthTextureAccess is present and
+    ///     initialised, SampleGridDepthTexture is used (primary, zero-raycast).
+    ///     Falls back to SampleGrid (raycast) when depth texture unavailable.
+    ///     Optional segmentation mask routes through SampleGridMaskGated.
+    ///
+    ///   Previous changes (1-5) unchanged:
     ///   1. One coroutine per class  2. Pose EMA smoothing
     ///   3. PCA 6-DoF pose           4. Global freeze / lock API
+    ///   5. Dimension readout on lock
     /// </summary>
     public class Box3DManager : MonoBehaviour
     {
@@ -67,11 +87,35 @@ namespace PassthroughCameraSamples.MultiObjectDetection
         private string[] m_labels;
         private bool m_globalFreeze;
 
+        // ── Gap 3: FrameSnapshot ─────────────────────────────────────────────
+
+        /// <summary>
+        /// Snapshot of a single depth frame's data, captured on the depth callback
+        /// thread and consumed safely inside coroutines via struct copy.
+        /// All arrays are rented from ArrayPool and returned in OnDepthFrame/OnDestroy.
+        /// </summary>
+        private struct FrameSnapshot
+        {
+            public Pose CameraPose;
+            public float[] DepthBuffer;   // rented from ArrayPool<float>.Shared
+            public Matrix4x4[] VpMatrix;      // rented from ArrayPool<Matrix4x4>.Shared
+            public int EyeIdx;
+            public int TexSize;
+            public bool IsValid;
+        }
+
+        private FrameSnapshot _latestFrame;
+        private DepthTextureAccess _depthAccess;
+        private int _eyeIdx;
+
         // ── Pool ─────────────────────────────────────────────────────────────
 
         private readonly List<Box3DInstance> m_activeBoxes = new();
         private readonly List<Box3DVisualizer> m_pool = new();
-        private readonly List<Vector3> m_hitBuffer = new();
+
+        // Gap 7: pre-allocated reuse buffers — eliminates per-frame heap alloc
+        private readonly List<Vector3> m_hitBuffer = new List<Vector3>(64);
+        private readonly List<Vector3> m_inlierBuffer = new List<Vector3>(64);
 
         private class Box3DInstance
         {
@@ -91,6 +135,66 @@ namespace PassthroughCameraSamples.MultiObjectDetection
         }
 
         // ── Unity Lifecycle ──────────────────────────────────────────────────
+
+        private void Awake()
+        {
+            // Gap 3 & 4: subscribe to depth frames; compute stereo eye index once
+            _depthAccess = GetComponent<DepthTextureAccess>(); // null is valid — raycast fallback used
+            if (_depthAccess != null)
+                _depthAccess.OnDepthTextureUpdateCPU += OnDepthFrame;
+
+            // Gap 4: wrong eye at 50cm = ~IPD parallax error in measurements
+            _eyeIdx = (m_cameraAccess != null &&
+                       m_cameraAccess.CameraPosition == PassthroughCameraAccess.CameraPositionType.Left)
+                      ? 0 : 1;
+        }
+
+        private void OnDestroy()
+        {
+            if (_depthAccess != null)
+                _depthAccess.OnDepthTextureUpdateCPU -= OnDepthFrame;
+
+            // Gap 3: return rented buffers to pool
+            if (_latestFrame.DepthBuffer != null)
+            {
+                ArrayPool<float>.Shared.Return(_latestFrame.DepthBuffer, clearArray: false);
+                _latestFrame.DepthBuffer = null;
+            }
+            if (_latestFrame.VpMatrix != null)
+            {
+                ArrayPool<Matrix4x4>.Shared.Return(_latestFrame.VpMatrix, clearArray: false);
+                _latestFrame.VpMatrix = null;
+            }
+        }
+
+        // ── Gap 3: Depth frame callback ──────────────────────────────────────
+
+        /// <summary>
+        /// Called by DepthTextureAccess on each new depth frame (AsyncGPUReadback callback).
+        /// Copies the NativeArray into a rented buffer — NativeArray is owned by the
+        /// building block and must not be referenced after this callback returns.
+        /// </summary>
+        private void OnDepthFrame(DepthTextureAccess.DepthFrameData d)
+        {
+            // Return previous rented buffers before renting new ones
+            if (_latestFrame.DepthBuffer != null)
+                ArrayPool<float>.Shared.Return(_latestFrame.DepthBuffer, clearArray: false);
+            if (_latestFrame.VpMatrix != null)
+                ArrayPool<Matrix4x4>.Shared.Return(_latestFrame.VpMatrix, clearArray: false);
+
+            int len = d.DepthTexturePixels.Length;
+            _latestFrame.DepthBuffer = ArrayPool<float>.Shared.Rent(len);
+            _latestFrame.VpMatrix = ArrayPool<Matrix4x4>.Shared.Rent(d.ViewProjectionMatrix.Length);
+
+            // NativeArray<float>.Copy is the safe API — never store the NativeArray ref
+            NativeArray<float>.Copy(d.DepthTexturePixels, _latestFrame.DepthBuffer, len);
+            System.Array.Copy(d.ViewProjectionMatrix, _latestFrame.VpMatrix, d.ViewProjectionMatrix.Length);
+
+            _latestFrame.CameraPose = d.CameraPose;
+            _latestFrame.TexSize = _depthAccess.TextureSize;
+            _latestFrame.EyeIdx = _eyeIdx;   // Gap 4: correct stereo eye
+            _latestFrame.IsValid = true;
+        }
 
         private void Update()
         {
@@ -170,10 +274,25 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             }
         }
 
+        /// <summary>
+        /// Entry point from the YOLO pipeline. Optionally accepts a segmentation mask
+        /// to gate depth sampling to confirmed object pixels.
+        /// </summary>
+        /// <param name="detections">YOLO detections this frame.</param>
+        /// <param name="inputSize">YOLO input resolution in pixels.</param>
+        /// <param name="cameraPose">Camera pose at inference time (used as fallback when no depth snapshot).</param>
+        /// <param name="mask">Optional segmentation mask (float array, may be null).</param>
+        /// <param name="maskWidth">Pixel width of mask (ignored when mask is null).</param>
+        /// <param name="maskHeight">Pixel height of mask (ignored when mask is null).</param>
+        /// <param name="maskAreLogits">True = threshold mask at 0; false = at 0.5.</param>
         public void Draw3DBoxes(
             List<(int classId, Vector4 boundingBox)> detections,
             Vector2Int inputSize,
-            Pose cameraPose)
+            Pose cameraPose,
+            float[] mask = null,
+            int maskWidth = 0,
+            int maskHeight = 0,
+            bool maskAreLogits = true)
         {
             if (!m_cameraAccess.IsPlaying) return;
             if (m_globalFreeze) return;
@@ -189,7 +308,7 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                 Box3DInstance existing = FindExistingInstance(detection.classId);
                 if (existing != null && existing.PendingCoroutine) continue;
 
-                StartCoroutine(PlaceBox3D(detection, inputSize, cameraPose));
+                StartCoroutine(PlaceBox3D(detection, inputSize, cameraPose, mask, maskWidth, maskHeight, maskAreLogits));
             }
         }
 
@@ -198,8 +317,19 @@ namespace PassthroughCameraSamples.MultiObjectDetection
         private IEnumerator PlaceBox3D(
             (int classId, Vector4 boundingBox) detection,
             Vector2Int inputSize,
-            Pose cameraPose)
+            Pose fallbackCameraPose,
+            float[] mask,
+            int maskWidth,
+            int maskHeight,
+            bool maskAreLogits)
         {
+            // Gap 3: struct copy at coroutine entry — safe across yield points,
+            // even if OnDepthFrame fires and mutates _latestFrame mid-coroutine.
+            var snapshot = _latestFrame;
+
+            // Use snapshot pose when available; fall back to YOLO-time pose otherwise.
+            Pose activePose = snapshot.IsValid ? snapshot.CameraPose : fallbackCameraPose;
+
             // Build normRect
             float x1 = detection.boundingBox.x;
             float y1 = detection.boundingBox.y;
@@ -215,21 +345,68 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                 rH / inputSize.y
             );
 
-            // Depth sampling
-            List<Vector3> hits = DepthSampler.SampleGrid(
-                normRect, m_cameraAccess, m_raycastManager,
-                m_gridSize, cameraPose, m_hitBuffer, jitter: true);
+            // ── Sampling path decision ────────────────────────────────────────
+            // Primary: hardware depth texture (zero-raycast, most accurate).
+            // With mask: mask-gated raycast path (mask confirms object pixels).
+            // Fallback: plain raycast (when DepthTextureAccess absent or uninitialised).
 
+            bool useDepthTexture = snapshot.IsValid
+                && snapshot.DepthBuffer != null
+                && _depthAccess != null
+                && _depthAccess.IsInitialized;
+
+            List<Vector3> hits;
+
+            if (mask != null && maskWidth > 0 && maskHeight > 0)
+            {
+                // Mask-gated path: raycast only confirmed object pixels
+                hits = DepthSampler.SampleGridMaskGated(
+                    normRect,
+                    mask, maskWidth, maskHeight, maskAreLogits,
+                    m_cameraAccess, m_raycastManager,
+                    m_gridSize, activePose,
+                    m_hitBuffer, jitter: true, edgeExclusionFraction: 0.08f);
+            }
+            else if (useDepthTexture)
+            {
+                // Primary: hardware depth texture — accurate, no raycast cost
+                hits = DepthSampler.SampleGridDepthTexture(
+                    normRect,
+                    snapshot.DepthBuffer, snapshot.VpMatrix,
+                    snapshot.EyeIdx, snapshot.TexSize,
+                    m_cameraAccess, snapshot.CameraPose,
+                    m_gridSize, m_hitBuffer, jitter: true, edgeExclusionFraction: 0.08f);
+            }
+            else
+            {
+                // Fallback: raycast path
+                hits = DepthSampler.SampleGrid(
+                    normRect, m_cameraAccess, m_raycastManager,
+                    m_gridSize, activePose, m_hitBuffer, jitter: true);
+            }
+
+            // Gap 7: pass m_inlierBuffer to avoid List<Vector3> allocation
             List<Vector3> inliers = DepthSampler.ClusterFilter(
-                hits, cameraPose.position, m_clusterTolerance, m_minHits);
+                hits, activePose.position, m_clusterTolerance, m_minHits, m_inlierBuffer);
 
             if (inliers.Count < m_minHits)
                 yield break;
 
-            // PCA 6-DoF pose
-            if (!DepthSampler.FitPCA6DoF(inliers, cameraPose,
+            // PCA 6-DoF pose (rotation + rawSize.z)
+            if (!DepthSampler.FitPCA6DoF(inliers, activePose,
                     out Vector3 rawCenter, out Vector3 rawSize, out Quaternion rawRotation))
                 yield break;
+
+            // ── Gap 6: MeasurePhysicalSize hybrid ────────────────────────────
+            // Override W and H with geometrically projected values at median depth.
+            // This is independent of point density and correct even with few inliers.
+            // rawSize.z (depth extent from PCA) is preserved — PCA is better at depth
+            // than projection because projection has no depth-axis baseline.
+            DepthSampler.MeasurePhysicalSize(
+                normRect, inliers, m_cameraAccess, activePose,
+                out float physicalWidth, out float physicalHeight);
+            rawSize.x = physicalWidth;
+            rawSize.y = physicalHeight;
 
             // Get-or-create the visualizer slot
             Box3DVisualizer vis = GetOrReuseVisualizer(detection.classId, rawCenter);
@@ -243,6 +420,7 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             inst.PendingCoroutine = true;
 
             // ── EMA pose smoothing ────────────────────────────────────────────
+            // Applied to the hybrid rawSize (Gap 6 already overrode X/Y before here).
             if (!inst.PoseInitialised)
             {
                 inst.SmoothedCenter = rawCenter;

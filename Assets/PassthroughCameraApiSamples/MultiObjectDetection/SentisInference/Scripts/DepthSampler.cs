@@ -1,5 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+using System.Buffers;
 using System.Collections.Generic;
 using Meta.XR;
 using UnityEngine;
@@ -7,29 +8,17 @@ using UnityEngine;
 namespace PassthroughCameraSamples.MultiObjectDetection
 {
     /// <summary>
-    /// DepthSampler.cs
+    /// DepthSampler — static utility class for depth-based 3D point sampling and box fitting.
     ///
-    /// Changes in this version:
-    ///   + FitPCA6DoF — markerless 6-DoF pose estimation via Principal Component
-    ///     Analysis on the inlier depth point cloud.
+    /// New in this version (Gaps 1–2, 5–6, 7):
+    ///   Gap 1 — SampleGridMaskGated: mask-gated + edge-excluded raycast sampling.
+    ///   Gap 2 — SampleGridDepthTexture: hardware depth texture primary sampling path.
+    ///   Gap 5 — ClusterFilter: hard depth-range pre-pass before any statistics.
+    ///   Gap 6 — MeasurePhysicalSize: median-depth edge projection for W/H.
+    ///   Gap 7 — ClusterFilter: ArrayPool<float> instead of array allocation;
+    ///            optional inlierReuse parameter to avoid List<Vector3> alloc.
     ///
-    ///     PCA finds the three orthogonal axes of maximum variance in the point
-    ///     cloud. These axes correspond to the object's natural orientation:
-    ///       * PC0 (largest variance)  -> longest spatial extent  (local X)
-    ///       * PC1 (second variance)   -> second extent           (local Y)
-    ///       * PC2 = PC0 x PC1        -> depth / surface normal  (local Z)
-    ///
-    ///     The resulting rotation makes the wireframe cuboid face the dominant
-    ///     surface of the detected object -- no markers, no model, no assumptions
-    ///     about the object class. The box aligns itself purely from the geometry
-    ///     of the returned depth hits.
-    ///
-    ///     Gravity-alignment post-pass: after PCA the Y axis is snapped to world
-    ///     up so the box never tilts with camera pitch, while the horizontal
-    ///     facing direction still comes from the point cloud's dominant axis.
-    ///
-    ///   (All previous fixes -- grid spacing, ClusterFilter two-pass, jitter --
-    ///    are retained unchanged.)
+    /// All existing public method signatures are preserved unchanged.
     /// </summary>
     public static class DepthSampler
     {
@@ -79,51 +68,367 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             return hits;
         }
 
-        // ── ClusterFilter (two-pass) ─────────────────────────────────────────
+        // ── SampleGridMaskGated (Gap 1) ──────────────────────────────────────
 
+        /// <summary>
+        /// Mask-gated grid sampling with edge exclusion.
+        /// Shrinks normRect inward by edgeExclusionFraction, then for each grid UV
+        /// checks the optional segmentation mask before firing a raycast. Only pixels
+        /// that pass the mask test (and the geometry raycast) are returned.
+        /// </summary>
+        /// <param name="normRect">Normalised bounding rect [0,1] from YOLO.</param>
+        /// <param name="mask">Optional float mask array. null = edge-exclusion only.</param>
+        /// <param name="maskWidth">Pixel width of mask.</param>
+        /// <param name="maskHeight">Pixel height of mask.</param>
+        /// <param name="maskAreLogits">True = threshold at 0; false = threshold at 0.5.</param>
+        /// <param name="pca">PassthroughCameraAccess for ray generation.</param>
+        /// <param name="rm">EnvironmentRayCastSampleManager for geometry hits.</param>
+        /// <param name="gridSize">Grid dimension (gridSize × gridSize samples).</param>
+        /// <param name="cameraPose">Pose used for ray generation.</param>
+        /// <param name="reuse">Optional pre-allocated list to fill; avoids allocation.</param>
+        /// <param name="jitter">Add sub-cell jitter to reduce aliasing.</param>
+        /// <param name="edgeExclusionFraction">Fractional inset on each side (default 0.08).</param>
+        public static List<Vector3> SampleGridMaskGated(
+            Rect normRect,
+            float[] mask,
+            int maskWidth,
+            int maskHeight,
+            bool maskAreLogits,
+            PassthroughCameraAccess pca,
+            EnvironmentRayCastSampleManager rm,
+            int gridSize,
+            Pose cameraPose,
+            List<Vector3> reuse = null,
+            bool jitter = true,
+            float edgeExclusionFraction = 0.08f)
+        {
+            var hits = reuse ?? new List<Vector3>(gridSize * gridSize);
+            hits.Clear();
+
+            if (pca == null || !pca.IsPlaying || rm == null)
+                return hits;
+
+            // Shrink rect inward to discard edge depth transitions
+            float insetX = normRect.width * edgeExclusionFraction;
+            float insetY = normRect.height * edgeExclusionFraction;
+            Rect insetRect = new Rect(
+                normRect.x + insetX,
+                normRect.y + insetY,
+                normRect.width - 2f * insetX,
+                normRect.height - 2f * insetY);
+
+            if (insetRect.width <= 0f || insetRect.height <= 0f)
+                return hits;
+
+            float step = gridSize > 1 ? 1f / (gridSize - 1) : 0f;
+            float jitterRange = gridSize > 1 ? step * 0.4f : 0f;
+
+            for (int xi = 0; xi < gridSize; xi++)
+            {
+                for (int yi = 0; yi < gridSize; yi++)
+                {
+                    float fx = xi * step;
+                    float fy = yi * step;
+
+                    if (jitter && gridSize > 2)
+                    {
+                        fx += Random.Range(-jitterRange, jitterRange);
+                        fy += Random.Range(-jitterRange, jitterRange);
+                    }
+
+                    float u = Mathf.Clamp01(insetRect.x + fx * insetRect.width);
+                    float v = Mathf.Clamp01(insetRect.y + fy * insetRect.height);
+
+                    // Mask gate — check before raycasting to save GPU round-trips
+                    if (mask != null)
+                    {
+                        int maskX = Mathf.Clamp((int)(u * maskWidth), 0, maskWidth - 1);
+                        int maskY = Mathf.Clamp((int)(v * maskHeight), 0, maskHeight - 1);
+                        int maskIdx = maskY * maskWidth + maskX;
+                        bool passes = maskAreLogits ? mask[maskIdx] > 0f : mask[maskIdx] > 0.5f;
+                        if (!passes) continue;
+                    }
+
+                    Ray ray = pca.ViewportPointToRay(new Vector2(u, v), cameraPose);
+                    Vector3? hit = rm.Raycast(ray);
+                    if (hit.HasValue)
+                        hits.Add(hit.Value);
+                }
+            }
+            return hits;
+        }
+
+        // ── SampleGridDepthTexture (Gap 2) ───────────────────────────────────
+
+        /// <summary>
+        /// Hardware depth-texture sampling path. No raycasting — reads depth at each
+        /// grid UV via a VP-matrix projection into the depth buffer. Zero raycast cost.
+        /// Uses DepthFrameData.CameraPose (NOT current frame pose) to avoid temporal
+        /// misalignment between the depth snapshot and its VP matrices.
+        /// </summary>
+        /// <param name="normRect">Normalised bounding rect [0,1] from YOLO.</param>
+        /// <param name="depthBuffer">ArrayPool copy of DepthFrameData.DepthTexturePixels.</param>
+        /// <param name="vpMatrix">DepthFrameData.ViewProjectionMatrix (length 2).</param>
+        /// <param name="eyeIdx">0 = left, 1 = right.</param>
+        /// <param name="texSize">DepthTextureAccess.TextureSize (square, dynamic).</param>
+        /// <param name="pca">PassthroughCameraAccess for ray generation.</param>
+        /// <param name="framePose">DepthFrameData.CameraPose — must match the VP matrix.</param>
+        /// <param name="gridSize">Grid dimension.</param>
+        /// <param name="reuse">Optional pre-allocated list to fill.</param>
+        /// <param name="jitter">Add sub-cell jitter.</param>
+        /// <param name="edgeExclusionFraction">Fractional inset on each side (default 0.08).</param>
+        public static List<Vector3> SampleGridDepthTexture(
+            Rect normRect,
+            float[] depthBuffer,
+            Matrix4x4[] vpMatrix,
+            int eyeIdx,
+            int texSize,
+            PassthroughCameraAccess pca,
+            Pose framePose,
+            int gridSize,
+            List<Vector3> reuse = null,
+            bool jitter = true,
+            float edgeExclusionFraction = 0.08f)
+        {
+            var hits = reuse ?? new List<Vector3>(gridSize * gridSize);
+            hits.Clear();
+
+            if (pca == null || !pca.IsPlaying || depthBuffer == null || vpMatrix == null
+                || vpMatrix.Length <= eyeIdx || texSize <= 0)
+                return hits;
+
+            // Shrink rect inward for edge exclusion
+            float insetX = normRect.width * edgeExclusionFraction;
+            float insetY = normRect.height * edgeExclusionFraction;
+            Rect insetRect = new Rect(
+                normRect.x + insetX,
+                normRect.y + insetY,
+                normRect.width - 2f * insetX,
+                normRect.height - 2f * insetY);
+
+            if (insetRect.width <= 0f || insetRect.height <= 0f)
+                return hits;
+
+            float step = gridSize > 1 ? 1f / (gridSize - 1) : 0f;
+            float jitterRange = gridSize > 1 ? step * 0.4f : 0f;
+            Matrix4x4 vp = vpMatrix[eyeIdx];
+            int eyeOffset = eyeIdx * texSize * texSize;
+
+            for (int xi = 0; xi < gridSize; xi++)
+            {
+                for (int yi = 0; yi < gridSize; yi++)
+                {
+                    float fx = xi * step;
+                    float fy = yi * step;
+
+                    if (jitter && gridSize > 2)
+                    {
+                        fx += Random.Range(-jitterRange, jitterRange);
+                        fy += Random.Range(-jitterRange, jitterRange);
+                    }
+
+                    float u = Mathf.Clamp01(insetRect.x + fx * insetRect.width);
+                    float v = Mathf.Clamp01(insetRect.y + fy * insetRect.height);
+
+                    Ray ray = pca.ViewportPointToRay(new Vector2(u, v), framePose);
+
+                    // Project a unit point along the ray into clip space
+                    Vector4 world1m = new Vector4(
+                        ray.origin.x + ray.direction.x,
+                        ray.origin.y + ray.direction.y,
+                        ray.origin.z + ray.direction.z,
+                        1f);
+                    Vector4 clip = vp * world1m;
+
+                    if (clip.w <= 0f) continue;
+
+                    // NDC -> UV
+                    float ndcX = clip.x / clip.w;
+                    float ndcY = clip.y / clip.w;
+                    float uvX = ndcX * 0.5f + 0.5f;
+                    float uvY = ndcY * 0.5f + 0.5f;
+
+                    int sx = Mathf.Clamp((int)(uvX * texSize), 0, texSize - 1);
+                    int sy = Mathf.Clamp((int)(uvY * texSize), 0, texSize - 1);
+                    int idx = eyeOffset + sy * texSize + sx;
+
+                    float depth = depthBuffer[idx];
+
+                    // Hard-reject invalid / sentinel depth values before any arithmetic
+                    if (depth <= 0f || depth > 20f || float.IsInfinity(depth) || float.IsNaN(depth))
+                        continue;
+
+                    Vector3 worldPoint = ray.origin + ray.direction * depth;
+                    hits.Add(worldPoint);
+                }
+            }
+            return hits;
+        }
+
+        // ── ClusterFilter (two-pass) — Gap 5 hard guard, Gap 7 ArrayPool ─────
+
+        /// <summary>
+        /// Two-pass median depth cluster filter.
+        /// Pre-pass: hard-rejects points with physically invalid distances (sentinel
+        /// values from the depth hardware) before any statistics are computed —
+        /// prevents sentinels from shifting the median and admitting background inliers.
+        /// Uses ArrayPool to avoid per-call float[] allocation.
+        /// </summary>
+        /// <param name="points">Input world-space point cloud.</param>
+        /// <param name="cameraPos">Camera world position used to compute distances.</param>
+        /// <param name="toleranceM">Max deviation from median to count as same surface (metres).</param>
+        /// <param name="minCount">Minimum inliers required; returns empty list if below.</param>
+        /// <param name="inlierReuse">Optional pre-allocated output list (avoids allocation).</param>
         public static List<Vector3> ClusterFilter(
             List<Vector3> points,
             Vector3 cameraPos,
             float toleranceM = 0.12f,
-            int minCount = 6)
+            int minCount = 6,
+            List<Vector3> inlierReuse = null)
         {
             if (points == null || points.Count < minCount)
-                return new List<Vector3>();
-
-            // Pass 1
-            float[] depths = new float[points.Count];
-            for (int i = 0; i < points.Count; i++)
-                depths[i] = Vector3.Distance(cameraPos, points[i]);
-
-            float median1 = Median(depths);
-
-            var pass1 = new List<Vector3>(points.Count);
-            var depths1 = new List<float>(points.Count);
-            for (int i = 0; i < points.Count; i++)
             {
-                if (Mathf.Abs(depths[i] - median1) <= toleranceM)
+                if (inlierReuse != null) { inlierReuse.Clear(); return inlierReuse; }
+                return new List<Vector3>();
+            }
+
+            // ── Gap 5: Hard pre-pass — remove physically invalid points ───────
+            // Prevents sentinel depth values (0, Inf, NaN) from entering Median()
+            // and shifting the tolerance band so background leaks through as inliers.
+            var validBuf = new List<Vector3>(points.Count);
+            foreach (var p in points)
+            {
+                float d = Vector3.Distance(cameraPos, p);
+                if (d > 0f && d <= 20f && !float.IsInfinity(d) && !float.IsNaN(d))
+                    validBuf.Add(p);
+            }
+
+            if (validBuf.Count < minCount)
+            {
+                if (inlierReuse != null) inlierReuse.Clear();
+                return inlierReuse ?? new List<Vector3>();
+            }
+
+            // ── Gap 7: ArrayPool for depth array — no per-call heap allocation ─
+            float[] depths = ArrayPool<float>.Shared.Rent(validBuf.Count);
+            try
+            {
+                // Pass 1
+                for (int i = 0; i < validBuf.Count; i++)
+                    depths[i] = Vector3.Distance(cameraPos, validBuf[i]);
+
+                float median1 = MedianSlice(depths, validBuf.Count);
+
+                var pass1 = new List<Vector3>(validBuf.Count);
+                var depths1 = ArrayPool<float>.Shared.Rent(validBuf.Count);
+                int depths1Count = 0;
+                try
                 {
-                    pass1.Add(points[i]);
-                    depths1.Add(depths[i]);
+                    for (int i = 0; i < validBuf.Count; i++)
+                    {
+                        if (Mathf.Abs(depths[i] - median1) <= toleranceM)
+                        {
+                            pass1.Add(validBuf[i]);
+                            depths1[depths1Count++] = depths[i];
+                        }
+                    }
+
+                    if (pass1.Count < minCount)
+                    {
+                        if (inlierReuse != null) inlierReuse.Clear();
+                        return inlierReuse ?? new List<Vector3>();
+                    }
+
+                    // Pass 2 (tighter)
+                    float median2 = MedianSlice(depths1, depths1Count);
+                    float tight = toleranceM * 0.55f;
+
+                    var result = inlierReuse ?? new List<Vector3>(pass1.Count);
+                    result.Clear();
+                    for (int i = 0; i < pass1.Count; i++)
+                    {
+                        if (Mathf.Abs(depths1[i] - median2) <= tight)
+                            result.Add(pass1[i]);
+                    }
+
+                    if (result.Count < minCount)
+                    {
+                        result.Clear();
+                        result.AddRange(pass1);
+                    }
+
+                    return result.Count >= minCount ? result : (result.Count == 0 ? result : result);
+                }
+                finally
+                {
+                    ArrayPool<float>.Shared.Return(depths1, clearArray: false);
                 }
             }
-
-            if (pass1.Count < minCount)
-                return new List<Vector3>();
-
-            // Pass 2 (tighter)
-            float median2 = Median(depths1.ToArray());
-            float tight = toleranceM * 0.55f;
-
-            var pass2 = new List<Vector3>(pass1.Count);
-            for (int i = 0; i < pass1.Count; i++)
+            finally
             {
-                if (Mathf.Abs(depths1[i] - median2) <= tight)
-                    pass2.Add(pass1[i]);
+                ArrayPool<float>.Shared.Return(depths, clearArray: false);
             }
+        }
 
-            var result = pass2.Count >= minCount ? pass2 : pass1;
-            return result.Count >= minCount ? result : new List<Vector3>();
+        // ── MeasurePhysicalSize (Gap 6) ──────────────────────────────────────
+
+        /// <summary>
+        /// Computes physically grounded width and height by projecting the bounding box
+        /// edges as rays at the median inlier depth. Independent of point density —
+        /// correct even with only a handful of inlier points.
+        /// </summary>
+        /// <param name="normRect">Normalised bounding rect [0,1] from YOLO.</param>
+        /// <param name="inliers">Cluster-filtered inlier point cloud.</param>
+        /// <param name="pca">PassthroughCameraAccess for ray generation.</param>
+        /// <param name="framePose">Pose at time of depth capture.</param>
+        /// <param name="physicalWidth">Output: physical width in metres.</param>
+        /// <param name="physicalHeight">Output: physical height in metres.</param>
+        public static void MeasurePhysicalSize(
+            Rect normRect,
+            List<Vector3> inliers,
+            PassthroughCameraAccess pca,
+            Pose framePose,
+            out float physicalWidth,
+            out float physicalHeight)
+        {
+            physicalWidth = 0.01f;
+            physicalHeight = 0.01f;
+
+            if (inliers == null || inliers.Count == 0 || pca == null)
+                return;
+
+            // Compute median depth from inliers
+            float[] dists = ArrayPool<float>.Shared.Rent(inliers.Count);
+            try
+            {
+                for (int i = 0; i < inliers.Count; i++)
+                    dists[i] = Vector3.Distance(framePose.position, inliers[i]);
+                float medianDepth = MedianSlice(dists, inliers.Count);
+
+                if (medianDepth <= 0f || medianDepth > 20f)
+                    return;
+
+                // 5 UVs: center, left, right, top, bottom
+                float cx = normRect.x + normRect.width * 0.5f;
+                float cy = normRect.y + normRect.height * 0.5f;
+
+                Ray rLeft = pca.ViewportPointToRay(new Vector2(normRect.xMin, cy), framePose);
+                Ray rRight = pca.ViewportPointToRay(new Vector2(normRect.xMax, cy), framePose);
+                Ray rTop = pca.ViewportPointToRay(new Vector2(cx, normRect.yMax), framePose);
+                Ray rBottom = pca.ViewportPointToRay(new Vector2(cx, normRect.yMin), framePose);
+
+                Vector3 wLeft = rLeft.origin + rLeft.direction * medianDepth;
+                Vector3 wRight = rRight.origin + rRight.direction * medianDepth;
+                Vector3 wTop = rTop.origin + rTop.direction * medianDepth;
+                Vector3 wBottom = rBottom.origin + rBottom.direction * medianDepth;
+
+                physicalWidth = Mathf.Max(Vector3.Distance(wLeft, wRight), 0.01f);
+                physicalHeight = Mathf.Max(Vector3.Distance(wTop, wBottom), 0.01f);
+            }
+            finally
+            {
+                ArrayPool<float>.Shared.Return(dists, clearArray: false);
+            }
         }
 
         // ── FitPCA6DoF ───────────────────────────────────────────────────────
@@ -134,7 +439,7 @@ namespace PassthroughCameraSamples.MultiObjectDetection
         //   Runs Power Iteration PCA on the world-space inlier point cloud to
         //   find the three principal axes of the object's geometry. These axes
         //   define a rotation that makes the wireframe cuboid face the object's
-        //   dominant surface -- completely markerless, no model needed.
+        //   dominant surface — completely markerless, no model needed.
         //
         // HOW PCA GIVES US POSE:
         //   The 3x3 covariance matrix C of the centred points encodes how the
@@ -486,12 +791,37 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             return true;
         }
 
+        /// <summary>Median of a full array. Kept for compatibility.</summary>
         public static float Median(float[] a)
         {
             var s = (float[])a.Clone();
             System.Array.Sort(s);
             int n = s.Length;
             return n % 2 == 0 ? (s[n / 2 - 1] + s[n / 2]) * 0.5f : s[n / 2];
+        }
+
+        // ── Private helpers ──────────────────────────────────────────────────
+
+        /// <summary>
+        /// Median of the first <paramref name="count"/> elements of a rented array.
+        /// Sorts in-place on a temporary ArrayPool copy to avoid mutating the caller's buffer.
+        /// </summary>
+        private static float MedianSlice(float[] a, int count)
+        {
+            if (count == 0) return 0f;
+            float[] tmp = ArrayPool<float>.Shared.Rent(count);
+            try
+            {
+                System.Array.Copy(a, tmp, count);
+                System.Array.Sort(tmp, 0, count);
+                return count % 2 == 0
+                    ? (tmp[count / 2 - 1] + tmp[count / 2]) * 0.5f
+                    : tmp[count / 2];
+            }
+            finally
+            {
+                ArrayPool<float>.Shared.Return(tmp, clearArray: false);
+            }
         }
     }
 }
