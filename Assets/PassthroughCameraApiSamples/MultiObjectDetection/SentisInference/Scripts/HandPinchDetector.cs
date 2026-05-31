@@ -1,4 +1,3 @@
-using TMPro;
 using UnityEngine;
 
 public class HandPinchDetector : MonoBehaviour
@@ -7,8 +6,8 @@ public class HandPinchDetector : MonoBehaviour
     [SerializeField] private OVRHand leftHand;
     [SerializeField] private OVRHand rightHand;
 
-    [Header("UI")]
-    [SerializeField] private TextMeshProUGUI debugText;
+    //[Header("UI")]
+    //[SerializeField] private TextMeshProUGUI debugText;
 
     [Header("Threshold")]
     [Range(0f, 1f)]
@@ -29,7 +28,7 @@ public class HandPinchDetector : MonoBehaviour
         UpdateHand(leftHand, true);
         UpdateHand(rightHand, false);
 
-        UpdateUI();
+        // UpdateUI();
     }
 
     private void UpdateHand(OVRHand hand, bool isLeft)
@@ -59,20 +58,20 @@ public class HandPinchDetector : MonoBehaviour
         }
     }
 
-    private void UpdateUI()
-    {
-        if (debugText == null)
-            return;
+    //private void UpdateUI()
+    //{
+    //    if (debugText == null)
+    //        return;
 
-        debugText.text =
-            "<b>PINCH DEBUG</b>\n\n" +
+    //    debugText.text =
+    //        "<b>PINCH DEBUG</b>\n\n" +
 
-            "<b>LEFT HAND</b>\n" +
-            $"Index Pinch : {leftIndexPinch}\n" +
-            $"Middle Pinch: {leftMiddlePinch}\n\n" +
+    //        "<b>LEFT HAND</b>\n" +
+    //        $"Index Pinch : {leftIndexPinch}\n" +
+    //        $"Middle Pinch: {leftMiddlePinch}\n\n" +
 
-            "<b>RIGHT HAND</b>\n" +
-            $"Index Pinch : {rightIndexPinch}\n" +
-            $"Middle Pinch: {rightMiddlePinch}";
-    }
+    //        "<b>RIGHT HAND</b>\n" +
+    //        $"Index Pinch : {rightIndexPinch}\n" +
+    //        $"Middle Pinch: {rightMiddlePinch}";
+    //}
 }
