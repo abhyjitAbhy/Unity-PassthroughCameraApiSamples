@@ -1,23 +1,19 @@
-// SegmentationAnchorController.cs — FIXED
+// SegmentationAnchorController.cs
 //
-// Changes from original:
-//  - Removed all LockedObjectCapture references (that fallback path is broken
-//    for passthrough on Quest — Screen.ReadPixels never captures compositor
-//    passthrough content, only Unity geometry).
-//  - _captureCoordinator is now auto-resolved in Awake() with a clear error
-//    if missing — no silent null-ref failures.
-//  - OnSystemLocked passes BoundingBoxMarker[] correctly to coordinator.
-//  - Left-middle-pinch path is uncommented and wired (was commented out).
-//  - No other behavioural changes to lock/unlock/anchor logic.
+// Updated to reference CustomImageSegmentationAgent and
+// CustomImageSegmentationVisualizer instead of Meta's package-locked originals.
+// All lock/unlock/anchor/pinch logic is unchanged.
 
 using System.Collections;
 using System.Collections.Generic;
 using PassthroughCameraSamples.MultiObjectDetection;
+using SmartMove;   // CustomImageSegmentationAgent, CustomImageSegmentationVisualizer
 using UnityEngine;
 
 namespace Meta.XR.BuildingBlocks.AIBlocks
 {
-    [RequireComponent(typeof(ImageSegmentationAgent))]
+    [RequireComponent(typeof(CustomImageSegmentationAgent))]
+    [RequireComponent(typeof(CustomImageSegmentationVisualizer))]
     [RequireComponent(typeof(SegmentCaptureCoordinator))]
     public sealed class SegmentationAnchorController : MonoBehaviour
     {
@@ -27,9 +23,10 @@ namespace Meta.XR.BuildingBlocks.AIBlocks
         [SerializeField] private bool spamLogs = true;
 
         // ── Internal refs ──────────────────────────────────────────────────────
-        private ImageSegmentationAgent _agent;
+
+        private CustomImageSegmentationAgent _agent;
         private HandPinchDetector _pinchDetector;
-        private ImageSegmentationVisualizer _visualizer;
+        private CustomImageSegmentationVisualizer _visualizer;
         private SegmentCaptureCoordinator _captureCoordinator;
 
         private OVRSpatialAnchor _spatialAnchor;
@@ -43,18 +40,19 @@ namespace Meta.XR.BuildingBlocks.AIBlocks
         private int _frameCounter;
         private BoxManipulator _lockedManipulator;
         private string _lockedLabel = "object";
+
         // ── Lifecycle ──────────────────────────────────────────────────────────
 
         private void Awake()
         {
-            _agent = GetComponent<ImageSegmentationAgent>();
+            _agent = GetComponent<CustomImageSegmentationAgent>();
             _pinchDetector = GetComponent<HandPinchDetector>();
-            _visualizer = GetComponent<ImageSegmentationVisualizer>();
+            _visualizer = GetComponent<CustomImageSegmentationVisualizer>();
             _captureCoordinator = GetComponent<SegmentCaptureCoordinator>();
 
-            if (_agent == null) LogError("ImageSegmentationAgent MISSING");
+            if (_agent == null) LogError("CustomImageSegmentationAgent MISSING");
             if (_pinchDetector == null) LogError("HandPinchDetector MISSING");
-            if (_visualizer == null) LogError("ImageSegmentationVisualizer MISSING");
+            if (_visualizer == null) LogError("CustomImageSegmentationVisualizer MISSING");
             if (_captureCoordinator == null) LogError("SegmentCaptureCoordinator MISSING — add it to this GameObject");
 
             StartCoroutine(UpdateSpatialAnchor());
@@ -70,25 +68,20 @@ namespace Meta.XR.BuildingBlocks.AIBlocks
             OVRManager.TrackingAcquired -= OnTrackingAcquired;
         }
 
+        // ── Update ─────────────────────────────────────────────────────────────
+
         private void Update()
         {
             _frameCounter++;
-
             if (_pinchDetector == null) return;
 
             bool rightIndex = _pinchDetector.rightIndexPinch;
             bool rightMiddle = _pinchDetector.rightMiddlePinch;
             bool leftMiddle = _pinchDetector.leftMiddlePinch;
 
-            // Right Index  → Lock (freeze detection, capture immediately)
             if (rightIndex) LockAll();
-
-            // Right Middle → Unlock (destroy frozen boxes, resume detection)
             if (rightMiddle) UnlockAll();
-
-            // Left Middle  → Re-capture while still locked
-            if (leftMiddle && _isLocked)
-                _captureCoordinator?.NotifyLeftMiddlePinch();
+            if (leftMiddle && _isLocked) _captureCoordinator?.NotifyLeftMiddlePinch();
         }
 
         // ── LOCK ───────────────────────────────────────────────────────────────
@@ -110,8 +103,7 @@ namespace Meta.XR.BuildingBlocks.AIBlocks
             _savedSegmentEveryNFrames = _agent.segmentEveryNFrames;
             _agent.segmentEveryNFrames = 0;
 
-            if (_visualizer != null)
-                _visualizer.enabled = false;
+            if (_visualizer != null) _visualizer.enabled = false;
 
             _frozenBoxes.Clear();
             _lockedManipulator = null;
@@ -125,12 +117,9 @@ namespace Meta.XR.BuildingBlocks.AIBlocks
                 _frozenBoxes.Add(go);
 
                 var manipulator = go.GetComponent<BoxManipulator>();
-                if (manipulator == null)
-                    manipulator = go.AddComponent<BoxManipulator>();
+                if (manipulator == null) manipulator = go.AddComponent<BoxManipulator>();
                 manipulator.Lock();
 
-                // Take first box as primary — YOLO returns highest-confidence object first.
-                // GO name is set to the label string by the visualizer (e.g. "tvmonitor").
                 if (_lockedManipulator == null)
                 {
                     _lockedManipulator = manipulator;
@@ -159,8 +148,7 @@ namespace Meta.XR.BuildingBlocks.AIBlocks
             foreach (var go in _frozenBoxes)
             {
                 if (go == null) continue;
-                var manipulator = go.GetComponent<BoxManipulator>();
-                manipulator?.Unlock();
+                go.GetComponent<BoxManipulator>()?.Unlock();
                 Destroy(go);
             }
             _frozenBoxes.Clear();
@@ -170,7 +158,7 @@ namespace Meta.XR.BuildingBlocks.AIBlocks
 
             if (_visualizer != null)
             {
-                _visualizer.ResetState();
+                _visualizer.ResetState();   // exists on our custom class — safe
                 _visualizer.enabled = true;
             }
 
@@ -219,11 +207,7 @@ namespace Meta.XR.BuildingBlocks.AIBlocks
             while (!awaiter.IsCompleted) yield return null;
 
             var result = awaiter.GetResult();
-            if (!result.Success)
-            {
-                LogError($"ANCHOR SAVE FAILED: {result}");
-                EraseSpatialAnchor();
-            }
+            if (!result.Success) { LogError($"ANCHOR SAVE FAILED: {result}"); EraseSpatialAnchor(); }
             else Log("ANCHOR SAVED");
         }
 
@@ -232,7 +216,6 @@ namespace Meta.XR.BuildingBlocks.AIBlocks
             for (int i = 0; i < 20; i++)
             {
                 yield return new WaitForSeconds(1f);
-
                 if (!_isHeadsetTracking) continue;
 
                 var unboundAnchors = new List<OVRSpatialAnchor.UnboundAnchor>(1);
