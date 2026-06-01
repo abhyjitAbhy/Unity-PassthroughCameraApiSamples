@@ -13,11 +13,11 @@
 using System.Collections;
 using System.Collections.Generic;
 using PassthroughCameraSamples.MultiObjectDetection;
+using SmartMove.AI;
 using UnityEngine;
-
 namespace Meta.XR.BuildingBlocks.AIBlocks
 {
-    [RequireComponent(typeof(ImageSegmentationAgent))]
+
     [RequireComponent(typeof(SegmentCaptureCoordinator))]
     public sealed class SegmentationAnchorController : MonoBehaviour
     {
@@ -27,9 +27,9 @@ namespace Meta.XR.BuildingBlocks.AIBlocks
         [SerializeField] private bool spamLogs = true;
 
         // ── Internal refs ──────────────────────────────────────────────────────
-        private ImageSegmentationAgent _agent;
+        private CustomImageSegmentationAgent _agent;
         private HandPinchDetector _pinchDetector;
-        private ImageSegmentationVisualizer _visualizer;
+        private CustomImageSegmentationVisualizer _visualizer;
         private SegmentCaptureCoordinator _captureCoordinator;
 
         private OVRSpatialAnchor _spatialAnchor;
@@ -47,9 +47,9 @@ namespace Meta.XR.BuildingBlocks.AIBlocks
 
         private void Awake()
         {
-            _agent = GetComponent<ImageSegmentationAgent>();
+            _agent = GetComponent<CustomImageSegmentationAgent>();
             _pinchDetector = GetComponent<HandPinchDetector>();
-            _visualizer = GetComponent<ImageSegmentationVisualizer>();
+            _visualizer = GetComponent<CustomImageSegmentationVisualizer>();
             _captureCoordinator = GetComponent<SegmentCaptureCoordinator>();
 
             if (_agent == null) LogError("ImageSegmentationAgent MISSING");

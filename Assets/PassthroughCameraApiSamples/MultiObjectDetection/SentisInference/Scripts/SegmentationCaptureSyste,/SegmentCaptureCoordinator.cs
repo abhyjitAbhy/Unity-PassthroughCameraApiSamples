@@ -28,7 +28,7 @@ using Meta.XR;
 using PassthroughCameraSamples;
 using PassthroughCameraSamples.MultiObjectDetection;
 using UnityEngine;
-
+using SmartMove.AI;
 #if MRUK_INSTALLED
 using Meta.XR.BuildingBlocks.AIBlocks;
 #endif
@@ -112,7 +112,7 @@ public sealed class SegmentCaptureCoordinator : MonoBehaviour
 #if MRUK_INSTALLED
     private BoundingBoxMarker[] _frozenMarkers = Array.Empty<BoundingBoxMarker>();
     private SegmentationResult _lastSegResult;
-    private ImageSegmentationAgent _agent;
+    private CustomImageSegmentationAgent _agent;
 #endif
 
     // ── Runtime ───────────────────────────────────────────────────────────
@@ -165,7 +165,7 @@ public sealed class SegmentCaptureCoordinator : MonoBehaviour
         if (webCamManager == null) webCamManager = FindAnyObjectByType<WebCamTextureManager>();
 
 #if MRUK_INSTALLED
-        _agent = GetComponent<ImageSegmentationAgent>();
+        _agent = GetComponent<CustomImageSegmentationAgent>();
         if (_agent == null)
             Debug.LogError("[Coordinator] ImageSegmentationAgent missing on this GameObject.");
 #endif
